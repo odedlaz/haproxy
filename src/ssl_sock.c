@@ -1789,6 +1789,49 @@ static int ssl_sock_advertise_alpn_protos(SSL *s, const unsigned char **out,
 #ifndef SSL_NO_GENERATE_CERTIFICATES
 
 /* Configure a DNS SAN extenion on a certificate. */
+int ssl_sock_add_crl_dist_ext(X509V3_CTX* ctx, X509* cert) {
+	int failure = 0;
+	int ret = 0;
+	X509_EXTENSION *ext = NULL;
+	DIST_POINT *distPoint = NULL;
+	GENERAL_NAMES *nameStack = NULL;
+	GENERAL_NAME *nameEntry = NULL;
+	STACK_OF(DIST_POINT) *distPoints = NULL;
+	struct buffer *buffer = get_trash_chunk();
+	chunk_appendf(buffer, "http://crl3.digicert.com/sha2-ha-server-g6.crl");
+	nameStack = GENERAL_NAMES_new();
+
+	nameEntry = GENERAL_NAME_new();
+	nameEntry->d.uniformResourceIdentifier = ASN1_IA5STRING_new();
+	nameEntry->type = GEN_URI;
+    ASN1_STRING_set(nameEntry->d.uniformResourceIdentifier, buffer->area, strlen(buffer->area));
+	sk_GENERAL_NAME_push(nameStack, nameEntry);
+
+	distPoint = DIST_POINT_new();
+	distPoint->distpoint = DIST_POINT_NAME_new();
+	distPoint->distpoint->name.fullname = nameStack;
+	distPoint->distpoint->type = 0;
+								
+	distPoints = sk_DIST_POINT_new_null();
+	sk_DIST_POINT_push (distPoints, distPoint);
+	ext = X509V3_EXT_i2d (NID_crl_distribution_points, 0, distPoints);
+	ret = X509_add_ext (cert, ext, -1);
+	if (ret < 0) {
+		send_log(NULL, LOG_EMERG, "haproxy: X509_add_ext %d", ret);
+		failure = 1;
+		goto cleanup;
+	}
+
+	send_log(NULL, LOG_EMERG, "haproxy: success in adding crl");
+	/* Success */
+	failure = 0;
+
+cleanup:
+	if (NULL != ext) X509_EXTENSION_free(ext);
+	return failure;
+}
+
+/* Configure a DNS SAN extenion on a certificate. */
 int ssl_sock_add_san_ext(X509V3_CTX* ctx, X509* cert, const char *servername) {
 	int failure = 0;
 	X509_EXTENSION *san_ext = NULL;
@@ -1910,6 +1953,10 @@ ssl_sock_do_create_cert(const char *servername, struct bind_conf *bind_conf, SSL
 
 	/* Add SAN extension */
 	if (ssl_sock_add_san_ext(&ctx, newcrt, servername)) {
+		goto mkcert_error;
+	}
+	/* Add CRL extension */
+	if (ssl_sock_add_crl_dist_ext(&ctx, newcrt)) {
 		goto mkcert_error;
 	}
 
